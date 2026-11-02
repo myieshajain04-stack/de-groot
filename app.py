@@ -259,6 +259,27 @@ def fig_convergence(X, labels, limit_value):
     return fig
 
 
+def anim_controls(T1, duration):
+    """Play / Pause / Restart buttons + time slider shared by all animations."""
+    still = {"frame": {"duration": 0, "redraw": True}, "mode": "immediate",
+             "transition": {"duration": 0}}
+    menus = [dict(
+        type="buttons", direction="left", x=0.0, y=1.14, xanchor="left", yanchor="top",
+        buttons=[
+            dict(label="▶ Play", method="animate",
+                 args=[None, {"frame": {"duration": duration, "redraw": True},
+                              "fromcurrent": True, "transition": {"duration": 0}}]),
+            dict(label="⏸ Pause", method="animate",
+                 args=[[None], {"frame": {"duration": 0, "redraw": False},
+                                "mode": "immediate", "transition": {"duration": 0}}]),
+            dict(label="⏮ Restart", method="animate", args=[["0"], still]),
+        ])]
+    sliders = [dict(active=0, currentvalue={"prefix": "t = "}, pad={"t": 40},
+                    steps=[dict(method="animate", label=str(t), args=[[str(t)], still])
+                           for t in range(T1)])]
+    return menus, sliders
+
+
 def fig_animation(X, labels, mode, duration):
     T1, n = X.shape
     lo, hi = float(X.min()), float(X.max())
@@ -275,28 +296,60 @@ def fig_animation(X, labels, mode, duration):
             return [go.Bar(x=labels, y=X[t], marker_color=colors, showlegend=False)]
         xaxis = dict(title="Agent")
 
-    still = {"frame": {"duration": 0, "redraw": True}, "mode": "immediate",
-             "transition": {"duration": 0}}
     fig = go.Figure(data=traces(0),
                     frames=[go.Frame(data=traces(t), name=str(t)) for t in range(T1)])
+    menus, sliders = anim_controls(T1, duration)
     fig.update_layout(
         height=560, xaxis=xaxis,
         yaxis=dict(range=[lo - pad, hi + pad], title="Opinion"),
-        margin=dict(t=90),
-        updatemenus=[dict(
-            type="buttons", direction="left", x=0.0, y=1.14, xanchor="left", yanchor="top",
-            buttons=[
-                dict(label="▶ Play", method="animate",
-                     args=[None, {"frame": {"duration": duration, "redraw": True},
-                                  "fromcurrent": True, "transition": {"duration": 0}}]),
-                dict(label="⏸ Pause", method="animate",
-                     args=[[None], {"frame": {"duration": 0, "redraw": False},
-                                    "mode": "immediate", "transition": {"duration": 0}}]),
-                dict(label="⏮ Restart", method="animate", args=[["0"], still]),
-            ])],
-        sliders=[dict(active=0, currentvalue={"prefix": "t = "}, pad={"t": 40},
-                      steps=[dict(method="animate", label=str(t), args=[[str(t)], still])
-                             for t in range(T1)])],
+        margin=dict(t=90), updatemenus=menus, sliders=sliders,
+    )
+    return fig
+
+
+def fig_network_animation(W, X, short, threshold, duration):
+    """Trust network whose node colours follow each agent's opinion over time."""
+    T1, n = X.shape
+    ang = 2 * np.pi * np.arange(n) / n
+    node_x, node_y = np.cos(ang), np.sin(ang)
+    lo, hi = float(X.min()), float(X.max())
+    if hi - lo < 1e-9:
+        lo, hi = lo - 0.5, hi + 0.5
+
+    edge_traces = []
+    for w_lo, w_hi, width, alpha in [(0.0, 0.1, 1.0, 0.25), (0.1, 0.25, 2.5, 0.4),
+                                     (0.25, 1.01, 5.0, 0.6)]:
+        xs, ys = [], []
+        for i in range(n):
+            for j in range(n):
+                if i != j and W[i, j] >= threshold and w_lo <= W[i, j] < w_hi:
+                    xs += [node_x[i], node_x[j], None]
+                    ys += [node_y[i], node_y[j], None]
+        edge_traces.append(go.Scatter(
+            x=xs, y=ys, mode="lines", hoverinfo="skip", showlegend=False,
+            line=dict(width=width, color=f"rgba(110,110,110,{alpha})")))
+
+    def node_trace(t):
+        return go.Scatter(
+            x=node_x, y=node_y, mode="markers+text", showlegend=False,
+            text=[f"{short[i]}<br>{X[t, i]:.2f}" for i in range(n)],
+            textfont=dict(size=10, color="black"),
+            marker=dict(size=48, color=X[t], cmin=lo, cmax=hi,
+                        colorscale=[[0, "#fff7bc"], [0.5, "#fdae61"], [1, "#d7301f"]],
+                        line=dict(width=1, color="black"),
+                        colorbar=dict(title="Opinion")),
+            hovertemplate="%{text}<extra></extra>")
+
+    k = len(edge_traces)
+    fig = go.Figure(
+        data=edge_traces + [node_trace(0)],
+        frames=[go.Frame(data=[node_trace(t)], traces=[k], name=str(t)) for t in range(T1)],
+    )
+    menus, sliders = anim_controls(T1, duration)
+    fig.update_layout(
+        height=680, margin=dict(t=90), updatemenus=menus, sliders=sliders,
+        xaxis=dict(visible=False, range=[-1.4, 1.4]),
+        yaxis=dict(visible=False, range=[-1.4, 1.4], scaleanchor="x"),
     )
     return fig
 
@@ -389,9 +442,10 @@ labels, short = R["labels"], R["short"]
 n = len(W)
 
 st.subheader("2 · Results")
-tabs = st.tabs(["📊 Overview", "🔥 Trust matrix", "🕸️ Network", "🌀 Spectrum",
-                "📈 Convergence", "🎬 Animation", "🗂️ Data"])
+tabs = st.tabs(["📊 Overview", "🔥 Trust matrix", "🕸️ Network graph", "📈 Convergence graph",
+                "🎬 Convergence animation", "🌐 Network animation", "🌀 Spectrum", "🗂️ Data"])
 
+# ── Overview ──
 with tabs[0]:
     if R["consensus"]:
         status = "Consensus ✅"
@@ -428,38 +482,55 @@ with tabs[0]:
         summary["x(∞)"] = R["limit"]
     st.dataframe(summary.round(4))
 
+# ── Trust matrix heatmap ──
 with tabs[1]:
     fig = fig_heatmap(W, short)
     st.pyplot(fig)
     plt.close(fig)
 
+# ── Static network graph ──
 with tabs[2]:
     k1, k2 = st.columns(2)
-    thr = k1.slider("Hide edges lighter than", 0.0, 0.5, 0.0 if n <= 6 else 0.05, 0.01)
-    show_lab = k2.toggle("Show edge weights", value=n <= 6)
+    thr = k1.slider("Hide edges lighter than", 0.0, 0.5, 0.0 if n <= 6 else 0.05, 0.01,
+                    key="thr_static")
+    show_lab = k2.toggle("Show edge weights", value=n <= 6, key="lab_static")
     fig = fig_network(W, thr, show_lab)
     st.pyplot(fig)
     plt.close(fig)
 
+# ── Static convergence graph ──
 with tabs[3]:
+    cons = float(R["limit"][0]) if R["consensus"] else None
+    st.plotly_chart(fig_convergence(X, labels, cons))
+
+# ── Convergence animation (lines / bars) ──
+with tabs[4]:
+    a1, a2 = st.columns([1, 2])
+    mode = a1.radio("View", ["Lines", "Bars"], horizontal=True, key="anim_mode")
+    dur = a2.slider("Frame duration (ms)", 50, 1000, 250, 50, key="dur_conv")
+    st.plotly_chart(fig_animation(X, labels, mode, dur))
+    st.caption("Use ▶ Play / ⏸ Pause / ⏮ Restart or drag the slider to scrub through time.")
+
+# ── Network animation (node colour = opinion) ──
+with tabs[5]:
+    n1, n2 = st.columns([2, 2])
+    thr_a = n1.slider("Hide edges lighter than", 0.0, 0.5, 0.0 if n <= 6 else 0.05, 0.01,
+                      key="thr_anim")
+    dur_n = n2.slider("Frame duration (ms)", 50, 1000, 400, 50, key="dur_net")
+    st.plotly_chart(fig_network_animation(W, X, short, thr_a, dur_n))
+    st.caption("Node colour and label show each agent's opinion at time t; "
+               "line thickness shows trust. Watch the colours merge as the group converges.")
+
+# ── Spectrum ──
+with tabs[6]:
     fig = fig_spectrum(eig, R["rho"])
     st.pyplot(fig)
     plt.close(fig)
     st.caption("A row-stochastic matrix always has eigenvalue 1. If every other eigenvalue lies "
                "strictly inside the unit circle, opinions reach consensus.")
 
-with tabs[4]:
-    cons = float(R["limit"][0]) if R["consensus"] else None
-    st.plotly_chart(fig_convergence(X, labels, cons))
-
-with tabs[5]:
-    a1, a2 = st.columns([1, 2])
-    mode = a1.radio("View", ["Lines", "Bars"], horizontal=True)
-    dur = a2.slider("Frame duration (ms)", 50, 1000, 250, 50)
-    st.plotly_chart(fig_animation(X, labels, mode, dur))
-    st.caption("Use ▶ Play / ⏸ Pause / ⏮ Restart or drag the slider to scrub through time.")
-
-with tabs[6]:
+# ── Data ──
+with tabs[7]:
     df_ops = pd.DataFrame(X, columns=labels)
     df_ops.index.name = "t"
     st.dataframe(df_ops.round(5))
