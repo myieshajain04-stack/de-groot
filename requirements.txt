@@ -1,0 +1,7 @@
+streamlit>=1.40
+numpy>=1.26
+pandas>=2.0
+matplotlib>=3.8
+seaborn>=0.13
+networkx>=3.2
+plotly>=5.20
